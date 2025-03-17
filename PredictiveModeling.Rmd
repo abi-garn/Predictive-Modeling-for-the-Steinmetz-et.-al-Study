@@ -1,0 +1,1052 @@
+
+<h1>Predictive Modeling for the Steinmetz et. al Study</h1>
+<h3>Using neural activity data and stimuli to predict a given feedback type</h3>
+
+</br>
+</br>
+</br>
+</br>
+
+<h2> <u>Abstract</u></h2>
+</br>
+The goal of this paper is to predict the feedback type for mice within the Steinmetz et. al study. We will be predicting the feedback type using neural activity data (represented by spike trains) and stimuli (represented by left and right contrasts). By analyzing a subset of the Steinmetz et. al study, we hope to develop a sufficiently strong understanding of the dataset--We aim to optimize the accuracy of our predictive model. 
+
+</br>
+</br>
+</br>
+
+
+<h2>1] <u>Introduction</u></h2>
+</br>
+The Steinmetz et. al study meant to determine a mouse's success depending on specific testing situations. With two screens of differing contrasts, the mouse either chose to turn a wheel toward one of the screens or to hold the wheel still. The left and right screen were designated as left and right stimuli, respectively.
+
+Depending on the two respective contrasts, a certain decision was predetermined to be correct. The mouse either succeeded at making this choice (making the feedback type equal 1) or failed (making the feedback type equal -1).
+
+Probes were embedded in the mouses' brains, determining brain spikes, along with the intervals of time per spike and the brain regions in which active neurons could be found. These details were all recorded.
+
+</br>
+</br>
+
+The corresponding dataset includes many features: 'feedback_type' describes whether a mouse succeeded (1) or failed (-1) in making a correct decision during a given trial, 'contrast_left' describes the contrast of the left stimulus, 'contrast_right' describes the contrast of the right stimulus, 'spks' represents the number of spikes of visual cortex neurons, 'time' represents the centers of the brain spikes' time bins, and 'brain_area' represents all the brain areas that house active neurons.
+
+Throughout this study, we manipulate these features to obtain sums, averages, and other statistical calculations, in the hopes of extracting useful insights. 
+Our journey toward an effective predictive model takes us through a series of steps. We transition from exploring our dataset, to extracting patterns about our mice and about trial-by-trial occurrences. Eventually, we derive session patterns from within our data. Using these patterns, we build and train a predictive model; All of our previous analysis aims to make this model as accurate as possible. Finally, we use new test sets to examine our model's accuracy, before reflecting on our study.
+
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+
+
+<h2>2] <u>Exploratory Analysis</u></h2>
+</br>
+We begin with the first part of our project, exploring the many features involved in our subset of the Steinmetz et. al dataset--it is especially important that we explore the characteristics among our different trials, sessions, and mice. This will include session-specific data structures, the neural activities occurring in each trial, changes across trials, and the similarities and differences between sessions and between mice.
+
+After this analysis, we should have a better understanding of our dataset and its features. This preliminary analysis contributes to our future decision making, as we try to identify which features play the greatest role in determining feedback type.
+</br>
+</br>
+
+
+```{r, echo=FALSE, R.options = list(tidyverse.quiet = TRUE), message=FALSE}
+#Our libraries
+library(tidyverse)
+library(knitr)
+library(xtable)
+library(kableExtra)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(tidyverse)
+library(caret) 
+library(xgboost)
+library(pROC)
+library(KMEANS.KNN)
+library(glmnet)
+library(caret)
+library(keras)
+library(MASS)
+library(class)
+library(reshape2)
+```
+
+
+```{r, echo=FALSE}
+#Extracting our data for each session and joining this data into one list
+session=list()
+for(i in 1:18){
+  session[[i]]=readRDS(paste('./Data/session',i,'.rds',sep=''))
+}
+
+#The number of sessions
+n.session=length(session)
+```
+
+
+
+```{r, echo=FALSE}
+#This function finds the average brain spike area
+average_spike_area<-function(i.t,this_session){
+  spk.trial = session[[this_session]]$spks[[i.t]]
+  area= session[[this_session]]$brain_area
+  spk.count=apply(spk.trial,1,sum)
+  spk.average.tapply=tapply(spk.count, area, mean)
+  return(spk.average.tapply)
+}
+
+#This function finds the average brain spike area for a specific session
+average_spike_area_sess.overall <-function(this_session){
+  sum = 0
+  totalTrials = length(session[[this_session]]$spks)
+  for (i in 1:totalTrials){
+    i.t = i
+    spk.trial = session[[this_session]]$spks[[i.t]]
+    area= session[[this_session]]$brain_area
+    spk.count=apply(spk.trial,1,sum)
+    spk.average.tapply=mean(spk.count)
+    sum = sum+spk.average.tapply
+  }
+  spk.average.total = (sum/totalTrials)
+  return(spk.average.total)
+}
+```
+
+
+
+We visualize some of our data using the table below. In this table, we extract session information -- this will include the date of each experiment, the number of brain areas that were involved, the number of neurons that were activated, the number of trials, and the average success rate; Each of the table's rows represents a particular session.
+Thus, we are given session-by-session data that will help us identify general similarities and differences.
+
+```{r, echo=FALSE}
+#Creating our table's structure
+n.session = length(session)
+meta <- tibble(
+  mouse_name = rep('name',n.session),
+  date_exp =rep('dt',n.session),
+  n_brain_area = rep(0,n.session),
+  n_neurons = rep(0,n.session),
+  n_trials = rep(0,n.session),
+  brain_spike = rep(0,n.session),
+  left_contrast = rep(0,n.session),
+  right_contrast = rep(0,n.session),
+  success_rate = rep(0,n.session)
+)
+
+#Adding information to our table
+for(i in 1:n.session){
+  tmp = session[[i]];
+  meta[i,1]=tmp$mouse_name;
+  meta[i,2]=tmp$date_exp;
+  meta[i,3]=length(unique(tmp$brain_area));
+  meta[i,4]=dim(tmp$spks[[1]])[1];
+  meta[i,5]=length(tmp$feedback_type);
+  meta[i,6]=average_spike_area_sess.overall(i);
+  meta[i,7]=mean(tmp$contrast_left);
+  meta[i,8]=mean(tmp$contrast_right);
+  meta[i,9]=mean(tmp$feedback_type+1)/2;
+  }
+
+#Formatting our table
+meta %>%
+    kbl(digits=2, caption = '<h3><b>Table 1: General Summary of Data, for Each Session</b></h3>', col.names = c("Mice", "Experiment Date", "Number of Brain Areas", "Number of Neurons", "Number of Trials", "Average Brain Spikes", "Average Left Contrast", "Average Right Contrast", "Average Success Rate")) %>%
+    kable_classic(full_width=F, html_font="Cambria")
+```
+As we can see from the table above, the data shows considerable heterogeneity between the mice. 
+
+For instance, while Hench and Forssmann were both subjected to four sessions of experimentation, Cori only underwent three sessions, while Lederberg underwent seven sessions. This inequity in experimentation may impact the substance of our data by making our information more representative of our heavily-tested specimen, Lederberg.
+
+We can also see that some mice had a considerable average success rate compared to their counterparts. Note that these mice did not always have the highest average contrasts or the highest average brain spikes; We conclude that we cannot solely rely on average contrasts or average brain spikes to accurately predict feedback type. 
+
+</br>
+</br>
+</br>
+
+We must continue our analysis, in the hopes of finding more insightful patterns.
+
+```{r, echo=FALSE}
+#A function that calculates data for a feature of our choice (Either "success_rate", "n_brain_area", or "n_neurons". 
+  #Data will correspond to a specific mouse.
+get_Data <- function(data, mName, var, firstLast){
+  if (var=="success_rate"){
+    answer = ((data %>% filter(mouse_name == mName))$success_rate)
+  }else if (var=="n_brain_area"){
+    answer = ((data %>% filter(mouse_name == mName))$n_brain_area)
+  } else {
+    answer = ((data %>% filter(mouse_name == mName))$n_neurons)
+  }
+  if (firstLast == 0){
+    answer = answer[1]
+  } else {
+    dataLen = length(data)
+    answer = tail(answer, 1)
+  }
+  answer = signif(answer, 2)
+  return (answer)
+}
+#A function that calculates either the minimum or the maximum for certain features (Either "success_rate", "n_brain_area", or "n_neurons"). 
+  #Data will correspond to a specific mouse.
+getMinMax<- function(data, mName, var, minMax){
+  if (var=="success_rate"){
+    answer = ((data %>% filter(mouse_name == mName))$success_rate)
+  }else if (var=="n_brain_area"){
+    answer = ((data %>% filter(mouse_name == mName))$n_brain_area)
+  } else {
+    answer = ((data %>% filter(mouse_name == mName))$n_neurons)
+  }
+  if (minMax == 0){
+    answer = min(answer)
+  } else {
+    answer = max(answer)
+  }
+  answer = signif(answer, 2)
+  return (answer)
+  
+}
+
+
+#A function that calculates the mean for a particular feature of our choice (Either "success_rate", "n_brain_area", or "n_neurons").
+  #Data will correspond to a specific mouse.
+getMeans <- function(mName, var){
+  sum = 0
+  count = 0
+  for (i in 1:n.session){
+    tmp = session[[i]];
+    if (tmp$mouse_name == mName){
+      if (var == "success_rate"){
+         val = mean(tmp$feedback_type+1)/2
+         sum = sum+val
+      } else if (var == "n_brain_area"){
+         val = length(unique(tmp$brain_area))
+         sum = sum+val
+      }else {
+         val = dim(tmp$spks[[1]])[1]
+         sum = sum+val
+      }
+      count = count+1
+    }
+  }
+  mean = (sum/count)
+  if (var == "n_brain_area"){
+    mean = signif((sum/count),1)
+  }
+  return (mean)
+}
+
+```
+
+
+
+
+
+
+</br>
+We now begin to explicitly examine our spike data.
+To better understand this data (and our sessions's structures), we can select a particular session and plot its spikes per area.
+
+```{r, echo=FALSE}
+i.s = 17
+n.trial=length(session[[i.s]]$feedback_type)
+n.area=length(unique(session[[i.s]]$brain_area ))
+# Alternatively, you can extract these information in the meta that we created before.
+
+# We will create a data frame that contain the average spike counts for each area, feedback type,  the two meta, and the trial id
+
+trial.summary =matrix(nrow=n.trial,ncol= n.area+1+2+1)
+for(i.t in 1:n.trial){
+  trial.summary[i.t,]=c(average_spike_area(i.t,i.s),
+                          session[[i.s]]$feedback_type[i.t],
+                        session[[i.s]]$contrast_left[i.t],
+                        session[[i.s]]$contrast_right[i.t],
+                        i.t)
+}
+
+colnames(trial.summary)=c(names(average_spike_area(i.t,i.s)), 'feedback', 'left contr.','right contr.','id' )
+
+
+```
+
+</br>
+
+The graph below will show us the average spike counts per brain area, where each average spike count comes from a specific trial. All of this data originates from Session 17. The purpose of this plot is to quantify the activity for Session 17's different brain regions. With this information in mind, we may be able to extract useful patterns that will allow us to usefully predict the feedback type during a specific trial. 
+<caption>Cool</caption>
+```{r, echo=FALSE}
+# Turning it into a data frame
+trial.summary <- as_tibble(trial.summary)
+area.col=c("darkred", "goldenrod", "lightgreen", "cyan", "blue", "magenta")
+# In base R, I usually initiate a blank plot before drawing anything on it
+plot(x=1,y=0, col='white',xlim=c(10,n.trial),ylim=c(0.5,3), xlab="Trials",ylab="Average spike counts", main=paste("Figure 1: Average Spikes per Brain Area, in Session", i.s))
+
+
+for(i in 1:n.area){
+  lines(smooth.spline(trial.summary$id, trial.summary[[i]]),col=area.col[i],lwd=3)
+}
+legend("topright", 
+  legend = colnames(trial.summary)[1:n.area], 
+  col = area.col, 
+  lty = 1, 
+  cex = 0.8
+)
+
+
+
+```
+</br>
+Judging by the graph above, we can see that the average spike counts fluctuate considerably. The largest average spike counts are associated with brain areas "LD" and "VPL". The biggest fluctuation appeared to come from the "RT" brain area, where the average spike count jumped up by about a unit, in the area between the 80th trial and the 100th trial.
+
+As the variation is too great to concisely represent, the dotted lines (which represent the trial-by-trial changes in spike counts) have been removed.
+
+</br>
+
+Considering the variation between the average spike counts, we conclude that this calculation could be useful in studying our model. The average spike counts could contain some pattern to aid in predicting whether a mouse succeeds (1) or fails (-1), strengthening the data patterns that support our predictive model.
+
+</br>
+</br>
+</br>
+
+We now study how our neurons act trial-by-trial.
+Sessions include many trials, so it makes sense to study a subset of the trials.
+
+```{r, echo=FALSE}
+get_trail_data <- function(session_id, trail_id){
+  start <- tibble("Brain Area"=NA)  %>%  add_column("Sum of Region Spikes"=NA) %>% add_column("Total Regions"=NA) %>% add_column("Average Region Spikes"=NA) 
+  start  = start%>% add_column("Trial ID"=NA) %>% add_column("Contrast Left"=NA) %>% add_column("Contrast Right"=NA) %>% add_column("Feedback Type"=NA)
+  spikes <- session[[session_id]]$spks[[trail_id]]
+  if (any(is.na(spikes))){
+    disp("value missing")
+  }
+
+  #trail_tibble <- as_tibble(spikes) %>% set_names(binename) %>%  add_column("brain_area" = session[[session_id]]$brain_area ) %>% group_by(brain_area) %>% summarize( "sum_spikes" =across(everything(),sum),.groups = "drop") 
+  trail_tibble <- tibble("neuron_spike" = rowSums(spikes))  %>%  add_column("brain_area" = session[[session_id]]$brain_area ) %>% group_by(brain_area) %>% summarize( region_sum_spike = sum(neuron_spike), region_count = n(),region_mean_spike = mean(neuron_spike)) 
+  trail_tibble  = trail_tibble%>% add_column("trail_id" = trail_id) %>% add_column("contrast_left"= session[[session_id]]$contrast_left[trail_id]) %>% add_column("contrast_right"= session[[session_id]]$contrast_right[trail_id]) %>% add_column("feedback_type"= session[[session_id]]$feedback_type[trail_id])
+  
+  trail_tibble = rename(trail_tibble, "Brain Area"="brain_area", "Sum of Region Spikes" = "region_sum_spike", "Total Regions" = "region_count","Average Region Spikes" = "region_mean_spike", "Trial ID" = "trail_id", "Contrast Left" = "contrast_left", "Contrast Right" = "contrast_right", "Feedback Type" = "feedback_type")
+  start = rbind(start, trail_tibble)
+  start = start[-1,]; start
+   
+}
+
+```
+
+
+```{r, echo=FALSE}
+get_session_data <- function(session_id){
+
+  start <- tibble("Brain Area"=NA)  %>%  add_column("Sum of Region Spikes"=NA) %>% add_column("Total Regions"=NA) %>% add_column("Average Region Spikes"=NA) 
+  start  = start%>% add_column("Trial ID"=NA) %>% add_column("Contrast Left"=NA) %>% add_column("Contrast Right"=NA) %>% add_column("Feedback Type"=NA)
+  
+  for (i in 1:length(session[[session_id]]$spks)){
+    trail_id = i
+    spikes <- session[[session_id]]$spks[[trail_id]]
+    if (any(is.na(spikes))){
+      disp("value missing")
+    }
+    trail_tibble <- tibble("neuron_spike" = rowSums(spikes))  %>%  add_column("brain_area" = session[[session_id]]$brain_area ) %>% group_by(brain_area) %>% summarize( region_sum_spike = sum(neuron_spike), region_count = n(),region_mean_spike = mean(neuron_spike)) 
+    trail_tibble  = trail_tibble%>% add_column("trail_id" = trail_id) %>% add_column("contrast_left"= session[[session_id]]$contrast_left[trail_id]) %>% add_column("contrast_right"= session[[session_id]]$contrast_right[trail_id]) %>% add_column("feedback_type"= session[[session_id]]$feedback_type[trail_id])
+
+    trail_tibble = rename(trail_tibble, "Brain Area"="brain_area", "Sum of Region Spikes" = "region_sum_spike", "Total Regions" = "region_count","Average Region Spikes" = "region_mean_spike", "Trial ID" = "trail_id", "Contrast Left" = "contrast_left", "Contrast Right" = "contrast_right", "Feedback Type" = "feedback_type")
+     start = rbind(start, trail_tibble)
+    
+
+  }
+  start = start[-1,]; start
+
+}
+```
+
+
+
+```{r, echo=FALSE}
+ start <- tibble("Brain Area"=NA)  %>%  add_column("Sum of Region Spikes"=NA) %>% add_column("Total Regions"=NA) %>% add_column("Average Region Spikes"=NA) 
+  start  = start%>% add_column("Trial ID"=NA) %>% add_column("Contrast Left"=NA) %>% add_column("Contrast Right"=NA) %>% add_column("Feedback Type"=NA)
+  
+#Selecting the first 4 trials
+for (i in 1:4){
+  trail_tibble_1 <- get_trail_data(i.s,i)
+  start = rbind(start, trail_tibble_1)
+}
+  
+
+start = start[-1,]; 
+
+start %>%
+    kbl(digits=2, caption = '<h3><b>Table 2: Analyzing the First Four Trials, Based on Brain Area</b></h3>') %>%
+    kable_classic(full_width=F, html_font="Cambria")
+```
+
+Note how the average spikes per brain region vary considerably--These averages differ between trials and between brain areas. Considering this difference, we will likely have to examine the average region spikes according to brain region, instead of simply averaging the number of spikes for each trial. If we take this approach, our values will be more complicated, but we will have more representative data.
+
+It is also important to observe how, when a group of brain areas belong to the same trial, this group has identical contrasts; This similarity means that we can analyze contrasts for each trial, instead of looking for the contrasts for each brain region within a trial. This helps to simplify our analysis.
+
+
+</br>
+</br>
+
+
+We can now break down differences between our mice and our sessions, specifically concerning brain spikes and left/right contrasts
+
+```{r, echo=FALSE, results='hide'}
+getAverages <- function(){
+  start <- tibble("Brain Area" = NA) %>% add_column("Mouse"=NA) %>% add_column("Sum of Region Spikes"=NA) %>%  add_column("Average Region Spikes"=NA) 
+  start  = start%>% add_column("Average Left Contrast"=NA) %>% add_column("Average Right Contrast"=NA) %>% add_column("Difference in Average Contrasts"=NA) %>% add_column("Average Success Rate"=NA)
+
+  neurons.sum = 0
+    trials.sum = 0
+    spikes.sum = 0
+    spikes.max.sum = 0
+    contrastLeft.sum = 0
+    contrastRight.sum = 0
+    success.sum = 0
+    totalSessions = 0
+    
+    currentMouse = session[[1]]$mouse_name
+    for (i in 1:n.session){
+      tmp = session[[i]]
+      
+      if ((tmp$mouse_name == currentMouse)){
+ 
+        spikes.sum = spikes.sum + average_spike_area_sess.overall(i)
+
+   
+        contrastLeft.sum = contrastLeft.sum + mean(tmp$contrast_left)
+        
+        contrastRight.sum = contrastRight.sum + mean(tmp$contrast_right)
+        success.sum = success.sum + mean(tmp$feedback_type+1)/2
+        totalSessions = totalSessions+1
+      }
+      if ((tmp$mouse_name != currentMouse) | (i==18)) {
+  
+        spikes.aver = spikes.sum/totalSessions
+        contrastLeft.aver = contrastLeft.sum/totalSessions
+        contrastRight.aver = contrastRight.sum/totalSessions
+        success.aver = success.sum/totalSessions
+        brain_area = unique(session[[i]]$brain_area)
+      
+        for (a in 1:length(brain_area)){
+          mouse1Tibble <- tibble("Brain Area" = brain_area[a]) %>% add_column("Mouse"=currentMouse) %>% add_column("Sum of Region Spikes"=spikes.sum) %>%  add_column("Average Region Spikes"=spikes.aver) 
+          mouse1Tibble  = mouse1Tibble%>% add_column("Average Left Contrast"=contrastLeft.aver) %>% add_column("Average Right Contrast"=contrastRight.aver) %>% add_column("Difference in Average Contrasts"=contrastLeft.aver-contrastRight.aver) %>% add_column("Average Success Rate"=success.aver)
+        
+          start = rbind(start, mouse1Tibble)
+          
+        }
+        
+  
+        currentMouse = tmp$mouse_name
+
+  }
+      
+    }
+
+    start = start[-1,] %>% dplyr::arrange(start[-1,], start[1,])
+
+    return(start )
+}
+```
+
+
+
+```{r, echo=FALSE}
+theAverages = getAverages()
+theAverages %>%
+    kbl(digits=2, caption = '<h3><b>Table 3: Mouse-Specific Data, Sorted by Brain Area</b></h3>') %>%
+    kable_classic(full_width=F, html_font="Cambria")
+```
+
+This is a simplified version of the data that we will be working with. Instead of analyzing trial-by-trial changes, we instead look at data for each brain region involved with a specific mouse--This is for the purpose of simplification.
+</br>
+Notice how many of the brain regions are associate with a contrast difference of 0.0; Therefore, it is possible that a considerable number of our contrast differences will be 0.0. This pattern may have a significant impact on feedback type.
+Considering the patterns that we could derive from the contrast difference, we should consider using this feature within our predictive model.
+</br>
+The active brain regions vary considerably between mice; This further complicates our data, as there are many different brain areas to consider. Thus, we need to represent our brain spikes using some kind of general metric--This could be the average spikes per brain area (AKA: the average region spikes).
+
+
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+
+
+<h2>3] <u>Data integration</u></h2>
+</br>
+
+
+Based on the information above, we can choose predictor variables which we feel have a sufficient impact on feedback type--This will allow for an accurate predictive model.
+</br>
+I decided to choose the average spikes per brain area ('average_region_spike') and the difference between contrasts ('contrast_difference') as my two predictor variables.
+The 'average_region_spike' variable accounts for neural activity data, while the 'contrast_difference' variable represents the influence of varying stimuli. Thus, our study will consider brain spikes and contrasts; These values are presented in a more general form, which will better represent trial-by-trial changes.
+</br>
+This selection was made with the intention of extracting the similarities between sessions while accounting for significant differences.
+The average spikes per brain area allows us to measure the spikes per brain area more fully--We can now quantify these spikes into one representative measurement. The difference between contrasts, on the other hand, distinguishes our data by how much 
+the left and right contrasts differ for a given trial--We use this metric to help sort our data into groups. Given that the difference between contrasts has a notable impact on feedback type (as we believe), this sorting will allow us to account for this value's influence. 
+Given the validity of our assumptions, the 'average_region_spike' variable and the 'contrast_difference' variable will increase the accuracy of our predictive model.
+</br>
+</br>
+</br>
+</br>
+We use Principal Component Analysis (PCA) to support our selection.
+</br>
+</br>
+
+```{r, echo=FALSE}
+get_session_data <- function(session_id){
+
+  start <- tibble("brain_area"=NA)  %>% add_column("mouse_name"=NA) %>% add_column("region_sum_spike"=NA) %>% add_column("trail_id"=NA) %>% add_column("contrast_left"=NA) %>% add_column("contrast_right"=NA) 
+  start  = start%>% add_column("contrast_difference"=NA) %>% add_column("feedback_type"=NA)
+  
+  for (i in 1:length(session[[session_id]]$spks)){
+    trail_id = i
+    spikes <- session[[session_id]]$spks[[trail_id]]
+    if (any(is.na(spikes))){
+      disp("value missing")
+    }
+    trail_tibble <- tibble("neuron_spike" = rowSums(spikes))  %>%  add_column("brain_area" = session[[session_id]]$brain_area) %>% group_by(brain_area)  %>% summarize(region_sum_spike = sum(neuron_spike)) %>% add_column("mouse_name" = session[[session_id]]$mouse_name)
+    trail_tibble  = trail_tibble%>% add_column("trail_id" = trail_id) %>% add_column("contrast_left"= session[[session_id]]$contrast_left[trail_id]) %>% add_column("contrast_right"= session[[session_id]]$contrast_right[trail_id]) %>% add_column("contrast_difference"= ((session[[session_id]]$contrast_left[trail_id]))-(session[[session_id]]$contrast_right[trail_id])) %>% add_column("feedback_type"= session[[session_id]]$feedback_type[trail_id])
+
+  
+     start = rbind(start, trail_tibble)
+    
+
+  }
+  start = start[-1,]; start
+
+}
+
+```
+
+```{r, echo=FALSE}
+theData = get_session_data(4)
+modifiedData = rename(theData, "Brain Area"="brain_area", "Mouse" = "mouse_name", "Sum of Region Spikes" = "region_sum_spike", "Trial ID" = "trail_id", "Left Contrast" = "contrast_left", "Right Contrast" = "contrast_right", "Difference in Contrasts" = "contrast_difference", "Feedback Type" = "feedback_type")
+```
+
+
+
+
+
+
+```{r, echo=FALSE}
+
+
+get_trial_data <- function(session_id){
+
+  start <- tibble("mouse_name"=NA) %>% add_column("region_sum_spike"=NA) %>% add_column("average_region_spike"=NA) %>% add_column("session_id"=NA) %>% add_column("trail_id"=NA) %>% add_column("contrast_left"=NA) %>% add_column("contrast_right"=NA) 
+  start  = start%>% add_column("contrast_difference"=NA) %>% add_column("feedback_type"=NA)
+  
+ 
+  for (i in 1:length(session[[session_id]]$spks)){
+    trail_id = i
+    spikes <- session[[session_id]]$spks[[trail_id]]
+    if (any(is.na(spikes))){
+      disp("value missing")
+    }
+    
+    #finding the sum of region spikes
+    neuron_spike = rowSums(spikes) 
+    theSums = sum(neuron_spike)
+    sum = 0
+    for (i in 1:length(theSums)){
+      sum = sum + theSums[i]
+    }
+    
+    #finding the mean of region spikes
+    mean = sum/length(session[[session_id]]$spks)
+
+    
+    
+    trail_tibble <- tibble("mouse_name" = session[[session_id]]$mouse_name) %>% add_column("region_sum_spike" = sum) %>% add_column("average_region_spike" = mean)
+    trail_tibble  = trail_tibble%>% add_column("session_id"=session_id) %>% add_column("trail_id" = trail_id) %>% add_column("contrast_left"= session[[session_id]]$contrast_left[trail_id]) %>% add_column("contrast_right"= session[[session_id]]$contrast_right[trail_id]) %>% add_column("contrast_difference"= ((session[[session_id]]$contrast_left[trail_id]))-(session[[session_id]]$contrast_right[trail_id])) %>% add_column("feedback_type"= session[[session_id]]$feedback_type[trail_id])
+    
+
+  
+     start = rbind(start, trail_tibble)
+  }
+  start = start[-1,];start
+
+}
+
+
+```
+
+
+
+
+
+```{r, echo=FALSE}
+#Get all data
+
+allSessionData <- tibble("mouse_name"=NA) %>% add_column("region_sum_spike"=NA) %>% add_column("average_region_spike"=NA) %>% add_column("session_id"=NA) %>% add_column("trail_id"=NA) %>% add_column("contrast_left"=NA) %>% add_column("contrast_right"=NA) 
+  allSessionData  = allSessionData%>% add_column("contrast_difference"=NA) %>% add_column("feedback_type"=NA)
+for (i in 1:n.session){
+  theTibble = get_trial_data(i)
+  allSessionData = rbind(allSessionData,theTibble)
+}
+  
+allSessionData=allSessionData[-1,];
+
+
+```
+
+
+
+```{r, echo=FALSE}
+#Performing principal component analysis (PCA)
+ggplot(data = allSessionData, aes(x=as.numeric(contrast_difference), y=as.numeric(average_region_spike), color=as.factor(as.character(feedback_type)))) + geom_point() + geom_jitter(width = 0.1, height = 100) + labs(title='Figure 2: Contrast Difference vs Average Spike per Brain Area', x="Contrast Difference", y="Average Spike (per Brain Area)", color=("Feedback Type")) + theme(title = element_text(face="bold", size = 12))
+
+```
+
+As seen from the above model, our subjects tend to have a contrast difference of 0.0. The data is grouped into bars according to the contrast difference; This gives our model a more understandable structure.
+From our perspective, the numbers of successes and failures appear to be heavily mixed--We determine this from the considerable number of overlapping blue and red dots. There is not an identifiable pattern for the different-colored dots--Our hope is that the model can identify this pattern.
+</br>
+Judging by how our data is structured, we conclude that our chosen predictors have a sufficient-enough impact to create an accurate prediction model.
+</br>
+
+
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+
+
+<h2>4] <u>Predictive Modeling</u></h2>
+</br>
+Having conducted our analysis and chosen our predictor variables, we construct our predictive model.
+Specifically, our predictive model will include contrast difference ('contrast_difference') and the average spike per brain area ('average_region_spike') to predict the outcome variable, feedback type ('feedback-type').
+```{r, echo=FALSE}
+set.seed(1)
+
+
+test_data <- tibble("mouse_name"=NA) %>% add_column("region_sum_spike"=NA) %>% add_column("average_region_spike"=NA) %>% add_column("session_id"=NA) %>% add_column("trail_id"=NA) %>% add_column("contrast_left"=NA) %>% add_column("contrast_right"=NA) 
+test_data  = test_data%>% add_column("contrast_difference"=NA) %>% add_column("feedback_type"=NA)
+
+corData = allSessionData[c(1:593),]; 
+forData = allSessionData[c(594:1638),];
+henData = allSessionData[c(1639:3049),]; 
+ledData = allSessionData[c(3050:5081),]; 
+theInteger.cor = sample(1:593, 119, replace=FALSE);
+for (i in 1:length(theInteger.cor)){
+  test_data = rbind(test_data, corData[theInteger.cor[i],])
+}
+
+theInteger.for = sample(1:1045, 209, replace=FALSE); 
+for (i in 1:length(theInteger.for)){
+  test_data = rbind(test_data, forData[theInteger.for[i],])
+}
+
+
+theInteger.hen = sample(1:1411, 282, replace=FALSE); 
+for (i in 1:length(theInteger.hen)){
+  test_data = rbind(test_data, henData[theInteger.hen[i],])
+}
+
+theInteger.led = sample(1:2032, 406, replace=FALSE); 
+for (i in 1:length(theInteger.led)){
+  test_data = rbind(test_data, ledData[theInteger.led[i],])
+}
+test_data = test_data[-1,];
+
+
+training_data = allSessionData[-theInteger.cor,]
+training_data = allSessionData[-(theInteger.for+593),]
+training_data = allSessionData[-(theInteger.hen+1638),]
+training_data = allSessionData[-(theInteger.led+3049),]
+training_data = training_data[-1,]
+
+training_data = tibble("average_region_spike"=training_data$average_region_spike) %>% add_column("contrast_difference"=training_data$contrast_difference) %>%
+  add_column("feedback_type"=training_data$feedback_type)
+
+
+test_data = tibble("average_region_spike"=test_data$average_region_spike) %>%add_column("contrast_difference"=test_data$contrast_difference) %>% add_column("feedback_type"=test_data$feedback_type)
+
+```
+</br>
+</br>
+We divide our current dataset into two sets: A training set and a test set. Using these two sets, we will test the accuracy of our predictive model.
+```{r, echo=FALSE}
+set.seed(1)
+#two datasets, 'newData' and 'comboData', are created from the original 'comboData' datset
+
+
+
+
+#a linear regression model is made
+# fitted.lasso = cv.glmnet(data.matrix(training_data[,-3]), training_data$feedback_type, family="binomial",epochs=10000)
+set.seed(1)
+train_x <- training_data$average_region_spike + training_data$contrast_difference
+test_x <- test_data$average_region_spike + test_data$contrast_difference
+test_y <- test_data$feedback_type
+
+#KNN with k=1
+knn_1 = knn(test=as.data.frame(test_x), train=as.data.frame(train_x), cl=training_data$feedback_type, k=1)
+#Confusion matrix for k=1
+
+
+misclass.error = mean(knn_1 != test_data$feedback_type)
+##The misclassification error rate for k=1 is 0.187
+cat(paste('The misclassification error rate: ', as.character(signif(misclass.error,3))))
+```
+We first train our model with our training set, and then we evaluate the model's accuracy using the testing set.
+To train and then test our model, we will be using the k Nearest Neighbors (kNN) classification method.
+At the end, we calculate our misclassification error rate to be about 0.187. Thus, around 81.3% of our predictions were successful, meaning that we have produced a relatively accurate predictive model.
+
+
+
+
+
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+
+
+
+<h2>5] <u>Prediction Performance on the Test Sets</u></h2>
+</br>
+With our predictive model ready, we can now test our accuracy using new test sets.
+</br>
+</br>
+We continue using the k Nearest Neighbors (kNN) classification method.
+</br>
+</br>
+```{r, echo=FALSE}
+session.test=list()
+for(i in 1:2){
+  session.test[[i]]=readRDS(paste('./test/test',i,'.rds',sep=''))
+}
+
+#The number of sessions
+n.session.test=length(session.test);
+```
+
+
+```{r, echo=FALSE}
+sessionData.test <- tibble("mouse_name"=NA) %>% add_column("region_sum_spike"=NA) %>% add_column("average_region_spike"=NA) %>% add_column("session_id"=NA) %>% add_column("trail_id"=NA) %>% add_column("contrast_left"=NA) %>% add_column("contrast_right"=NA) 
+sessionData.test  = sessionData.test%>% add_column("contrast_difference"=NA) %>% add_column("feedback_type"=NA)
+for (i in 1:n.session.test){
+  theTibble = get_trial_data(i)
+  sessionData.test = rbind(allSessionData,theTibble)
+}
+  
+sessionData.test=sessionData.test[-1,]; 
+
+ourData.test = tibble("average_region_spike"=sessionData.test$average_region_spike) %>% add_column("contrast_difference"=sessionData.test$contrast_difference) %>% add_column("feedback_type"=sessionData.test$feedback_type) 
+
+```
+
+
+
+
+```{r, echo=FALSE}
+set.seed(1)
+test_x <- ourData.test$average_region_spike + ourData.test$contrast_difference
+test_y <- ourData.test$feedback_type
+
+#KNN with k=1
+knn_1 = knn(test=as.data.frame(test_x), train=as.data.frame(train_x), cl=training_data$feedback_type, k=1)
+#Confusion matrix for k=1
+
+
+misclass.error = mean(knn_1 != ourData.test$feedback_type)
+
+cat(paste('The misclassification error rate: ', as.character(signif(misclass.error,2))))
+
+```
+At the end, we receive a misclassification error rate of around 0.067, meaning that about 93.3% of our predictions were correct. 
+Considering how accurate our predictions were, our predictive model has successfully evaluated the new test sets. This considerable level of success further supports our model's accuracy.
+
+
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+
+
+<h2>6] <u>Discussion</u></h2>
+</br>
+Overall, this predictive model demonstrated considerable accuracy, producing misclassification error rates well under the 20% mark. Thus, we achieved better than 80% accuracy for every test--Our predictive model appears to be effective.
+</br>
+The most difficult part of this report was finding the predictors to use for our predictive model. Given that the accuracy of our predictions relied so heavily on these variables, the steps leading up to the selection of our predictors had to be rigorous and thought-out.
+If I could do this project over again, I would have spent more time on predictor selection. In my eyes, this was the most important part of the project--Our predictor variables determined how well we accomplished our project's prediction-based goal.
+</br>
+</br>
+There are several improvements that could be made to this report. For instance, predictors with more of an influence on feedback type could be identified--This would allow the predictive model to be centered around more revealing variables. Thus, the accuracy of our model would improve.
+To allow for the former idea, a more in-depth analysis would have to be conducted; We must develop a better understanding of our dataset to identify these variables.
+</br>
+</br>
+Through considerable analysis and careful planning, we developed a predictive model with considerable predictive power. Although there are changes we could make to improve upon our report, we have accomplished our main objective--We have created a powerful predictive model.
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+
+
+
+
+<h2><u>Appendix</u></h2>
+</br>
+<h4>2] Exploratory Analysis</h4>
+```{r, results='hide'}
+get_session_data <- function(session_id){
+
+  start <- tibble("brain_area"=NA)  %>% add_column("mouse_name"=NA) %>% add_column("region_sum_spike"=NA) %>% add_column("trail_id"=NA) %>% add_column("contrast_left"=NA) %>% add_column("contrast_right"=NA) 
+  start  = start%>% add_column("contrast_difference"=NA) %>% add_column("feedback_type"=NA)
+  
+  for (i in 1:length(session[[session_id]]$spks)){
+    trail_id = i
+    spikes <- session[[session_id]]$spks[[trail_id]]
+    if (any(is.na(spikes))){
+      disp("value missing")
+    }
+    trail_tibble <- tibble("neuron_spike" = rowSums(spikes))  %>%  add_column("brain_area" = session[[session_id]]$brain_area) %>% group_by(brain_area)  %>% summarize(region_sum_spike = sum(neuron_spike)) %>% add_column("mouse_name" = session[[session_id]]$mouse_name)
+    trail_tibble  = trail_tibble%>% add_column("trail_id" = trail_id) %>% add_column("contrast_left"= session[[session_id]]$contrast_left[trail_id]) %>% add_column("contrast_right"= session[[session_id]]$contrast_right[trail_id]) %>% add_column("contrast_difference"= ((session[[session_id]]$contrast_left[trail_id]))-(session[[session_id]]$contrast_right[trail_id])) %>% add_column("feedback_type"= session[[session_id]]$feedback_type[trail_id])
+
+  
+     start = rbind(start, trail_tibble)
+    
+
+  }
+  start = start[-1,]; start
+
+}
+
+```
+</br>
+```{r, results='hide'}
+theData = get_session_data(4)
+modifiedData = rename(theData, "Brain Area"="brain_area", "Mouse" = "mouse_name", "Sum of Region Spikes" = "region_sum_spike", "Trial ID" = "trail_id", "Left Contrast" = "contrast_left", "Right Contrast" = "contrast_right", "Difference in Contrasts" = "contrast_difference", "Feedback Type" = "feedback_type")
+```
+
+</br>
+
+
+
+
+```{r, results='hide'}
+
+
+get_trial_data <- function(session_id){
+
+  start <- tibble("mouse_name"=NA) %>% add_column("region_sum_spike"=NA) %>% add_column("average_region_spike"=NA) %>% add_column("session_id"=NA) %>% add_column("trail_id"=NA) %>% add_column("contrast_left"=NA) %>% add_column("contrast_right"=NA) 
+  start  = start%>% add_column("contrast_difference"=NA) %>% add_column("feedback_type"=NA)
+  
+ 
+  for (i in 1:length(session[[session_id]]$spks)){
+    trail_id = i
+    spikes <- session[[session_id]]$spks[[trail_id]]
+    if (any(is.na(spikes))){
+      disp("value missing")
+    }
+    
+    #finding the sum of region spikes
+    neuron_spike = rowSums(spikes) 
+    theSums = sum(neuron_spike)
+    sum = 0
+    for (i in 1:length(theSums)){
+      sum = sum + theSums[i]
+    }
+    
+    #finding the mean of region spikes
+    mean = sum/length(session[[session_id]]$spks)
+
+    
+    
+    trail_tibble <- tibble("mouse_name" = session[[session_id]]$mouse_name) %>% add_column("region_sum_spike" = sum) %>% add_column("average_region_spike" = mean)
+    trail_tibble  = trail_tibble%>% add_column("session_id"=session_id) %>% add_column("trail_id" = trail_id) %>% add_column("contrast_left"= session[[session_id]]$contrast_left[trail_id]) %>% add_column("contrast_right"= session[[session_id]]$contrast_right[trail_id]) %>% add_column("contrast_difference"= ((session[[session_id]]$contrast_left[trail_id]))-(session[[session_id]]$contrast_right[trail_id])) %>% add_column("feedback_type"= session[[session_id]]$feedback_type[trail_id])
+    
+
+  
+     start = rbind(start, trail_tibble)
+  }
+  start = start[-1,];start
+
+}
+
+
+```
+
+</br>
+
+
+
+```{r}
+#Get all data
+
+allSessionData <- tibble("mouse_name"=NA) %>% add_column("region_sum_spike"=NA) %>% add_column("average_region_spike"=NA) %>% add_column("session_id"=NA) %>% add_column("trail_id"=NA) %>% add_column("contrast_left"=NA) %>% add_column("contrast_right"=NA) 
+  allSessionData  = allSessionData%>% add_column("contrast_difference"=NA) %>% add_column("feedback_type"=NA)
+for (i in 1:n.session){
+  theTibble = get_trial_data(i)
+  allSessionData = rbind(allSessionData,theTibble)
+}
+  
+allSessionData=allSessionData[-1,];
+
+
+```
+
+</br>
+</br>
+</br>
+</br>
+<h4>3] Data Integration</h4>
+```{r, results='hide'}
+#Performing principal component analysis (PCA)
+ggplot(data = allSessionData, aes(x=as.numeric(contrast_difference), y=as.numeric(average_region_spike), color=as.factor(as.character(feedback_type)))) + geom_point() + geom_jitter(width = 0.1, height = 100) + labs(title='Figure 2: Contrast Difference vs Average Spike per Brain Area', x="Contrast Difference", y="Average Spike (per Brain Area)", color=("Feedback Type")) + theme(title = element_text(face="bold", size = 12))
+
+```
+
+
+</br>
+</br>
+</br>
+</br>
+
+<h4>4] Predictive Modeling</h4>
+```{r, results='hide'}
+set.seed(1)
+
+
+test_data <- tibble("mouse_name"=NA) %>% add_column("region_sum_spike"=NA) %>% add_column("average_region_spike"=NA) %>% add_column("session_id"=NA) %>% add_column("trail_id"=NA) %>% add_column("contrast_left"=NA) %>% add_column("contrast_right"=NA) 
+test_data  = test_data%>% add_column("contrast_difference"=NA) %>% add_column("feedback_type"=NA)
+
+corData = allSessionData[c(1:593),]; 
+forData = allSessionData[c(594:1638),];
+henData = allSessionData[c(1639:3049),]; 
+ledData = allSessionData[c(3050:5081),]; 
+theInteger.cor = sample(1:593, 119, replace=FALSE);
+for (i in 1:length(theInteger.cor)){
+  test_data = rbind(test_data, corData[theInteger.cor[i],])
+}
+
+theInteger.for = sample(1:1045, 209, replace=FALSE); 
+for (i in 1:length(theInteger.for)){
+  test_data = rbind(test_data, forData[theInteger.for[i],])
+}
+
+
+theInteger.hen = sample(1:1411, 282, replace=FALSE); 
+for (i in 1:length(theInteger.hen)){
+  test_data = rbind(test_data, henData[theInteger.hen[i],])
+}
+
+theInteger.led = sample(1:2032, 406, replace=FALSE); 
+for (i in 1:length(theInteger.led)){
+  test_data = rbind(test_data, ledData[theInteger.led[i],])
+}
+test_data = test_data[-1,];
+
+
+training_data = allSessionData[-theInteger.cor,]
+training_data = allSessionData[-(theInteger.for+593),]
+training_data = allSessionData[-(theInteger.hen+1638),]
+training_data = allSessionData[-(theInteger.led+3049),]
+training_data = training_data[-1,]
+
+training_data = tibble("average_region_spike"=training_data$average_region_spike) %>% add_column("contrast_difference"=training_data$contrast_difference) %>%
+  add_column("feedback_type"=training_data$feedback_type)
+
+
+test_data = tibble("average_region_spike"=test_data$average_region_spike) %>%add_column("contrast_difference"=test_data$contrast_difference) %>% add_column("feedback_type"=test_data$feedback_type)
+
+```
+</br>
+```{r, results='hide'}
+set.seed(1)
+#two datasets, 'newData' and 'comboData', are created from the original 'comboData' datset
+
+
+
+
+#a linear regression model is made
+# fitted.lasso = cv.glmnet(data.matrix(training_data[,-3]), training_data$feedback_type, family="binomial",epochs=10000)
+set.seed(1)
+train_x <- training_data$average_region_spike + training_data$contrast_difference
+test_x <- test_data$average_region_spike + test_data$contrast_difference
+test_y <- test_data$feedback_type
+
+#KNN with k=1
+knn_1 = knn(test=as.data.frame(test_x), train=as.data.frame(train_x), cl=training_data$feedback_type, k=1)
+#Confusion matrix for k=1
+
+
+misclass.error = mean(knn_1 != test_data$feedback_type)
+##The misclassification error rate for k=1 is 0.187
+cat(paste('The misclassification error rate: ', as.character(signif(misclass.error,3))))
+```
+
+</br>
+</br>
+</br>
+</br>
+
+
+<h4>5] Prediction Performance on the Test Sets</h4>
+```{r, results='hide'}
+session.test=list()
+for(i in 1:2){
+  session.test[[i]]=readRDS(paste('./test/test',i,'.rds',sep=''))
+}
+
+#The number of sessions
+n.session.test=length(session.test);
+```
+
+</br>
+```{r}
+sessionData.test <- tibble("mouse_name"=NA) %>% add_column("region_sum_spike"=NA) %>% add_column("average_region_spike"=NA) %>% add_column("session_id"=NA) %>% add_column("trail_id"=NA) %>% add_column("contrast_left"=NA) %>% add_column("contrast_right"=NA) 
+sessionData.test  = sessionData.test%>% add_column("contrast_difference"=NA) %>% add_column("feedback_type"=NA)
+for (i in 1:n.session.test){
+  theTibble = get_trial_data(i)
+  sessionData.test = rbind(allSessionData,theTibble)
+}
+  
+sessionData.test=sessionData.test[-1,]; 
+
+ourData.test = tibble("average_region_spike"=sessionData.test$average_region_spike) %>% add_column("contrast_difference"=sessionData.test$contrast_difference) %>% add_column("feedback_type"=sessionData.test$feedback_type) 
+
+```
+
+
+</br>
+
+```{r, results='hide'}
+set.seed(1)
+test_x <- ourData.test$average_region_spike + ourData.test$contrast_difference
+test_y <- ourData.test$feedback_type
+
+#KNN with k=1
+knn_1 = knn(test=as.data.frame(test_x), train=as.data.frame(train_x), cl=training_data$feedback_type, k=1)
+#Confusion matrix for k=1
+
+
+misclass.error = mean(knn_1 != ourData.test$feedback_type)
+
+cat(paste('The misclassification error rate: ', as.character(signif(misclass.error,2))))
+
+```
+
+</br>
+</br>
+</br>
+</br>
+</br>
+
+
+<h2>Reference</h2>
+Zhu, Hao . “Create Awesome HTML Table with Knitr::Kable and KableExtra.” Haozhu233.Github.io, 18 Jan. 2024, haozhu233.github.io/kableExtra/awesome_table_in_html.html. Accessed 27 Feb. 2025.
+
