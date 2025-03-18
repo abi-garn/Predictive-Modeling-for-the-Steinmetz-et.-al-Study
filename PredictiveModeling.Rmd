@@ -801,6 +801,370 @@ Through considerable analysis and careful planning, we developed a predictive mo
 <h2><u>Appendix</u></h2>
 </br>
 <h4>2] Exploratory Analysis</h4>
+```{r, R.options = list(tidyverse.quiet = TRUE), message=FALSE}
+#Our libraries
+library(tidyverse)
+library(knitr)
+library(xtable)
+library(kableExtra)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(tidyverse)
+library(caret) 
+library(xgboost)
+library(pROC)
+library(KMEANS.KNN)
+library(glmnet)
+library(caret)
+library(keras)
+library(MASS)
+library(class)
+library(reshape2)
+```
+
+</br>
+
+```{r, results='hide'}
+#Extracting our data for each session and joining this data into one list
+session=list()
+for(i in 1:18){
+  session[[i]]=readRDS(paste('./Data/session',i,'.rds',sep=''))
+}
+
+#The number of sessions
+n.session=length(session)
+```
+
+</br>
+
+```{r, results='hide'}
+#This function finds the average brain spike area
+average_spike_area<-function(i.t,this_session){
+  spk.trial = session[[this_session]]$spks[[i.t]]
+  area= session[[this_session]]$brain_area
+  spk.count=apply(spk.trial,1,sum)
+  spk.average.tapply=tapply(spk.count, area, mean)
+  return(spk.average.tapply)
+}
+
+#This function finds the average brain spike area for a specific session
+average_spike_area_sess.overall <-function(this_session){
+  sum = 0
+  totalTrials = length(session[[this_session]]$spks)
+  for (i in 1:totalTrials){
+    i.t = i
+    spk.trial = session[[this_session]]$spks[[i.t]]
+    area= session[[this_session]]$brain_area
+    spk.count=apply(spk.trial,1,sum)
+    spk.average.tapply=mean(spk.count)
+    sum = sum+spk.average.tapply
+  }
+  spk.average.total = (sum/totalTrials)
+  return(spk.average.total)
+}
+```
+
+
+</br>
+
+```{r, results='hide'}
+#Creating our table's structure
+n.session = length(session)
+meta <- tibble(
+  mouse_name = rep('name',n.session),
+  date_exp =rep('dt',n.session),
+  n_brain_area = rep(0,n.session),
+  n_neurons = rep(0,n.session),
+  n_trials = rep(0,n.session),
+  brain_spike = rep(0,n.session),
+  left_contrast = rep(0,n.session),
+  right_contrast = rep(0,n.session),
+  success_rate = rep(0,n.session)
+)
+
+#Adding information to our table
+for(i in 1:n.session){
+  tmp = session[[i]];
+  meta[i,1]=tmp$mouse_name;
+  meta[i,2]=tmp$date_exp;
+  meta[i,3]=length(unique(tmp$brain_area));
+  meta[i,4]=dim(tmp$spks[[1]])[1];
+  meta[i,5]=length(tmp$feedback_type);
+  meta[i,6]=average_spike_area_sess.overall(i);
+  meta[i,7]=mean(tmp$contrast_left);
+  meta[i,8]=mean(tmp$contrast_right);
+  meta[i,9]=mean(tmp$feedback_type+1)/2;
+  }
+
+#Formatting our table
+meta %>%
+    kbl(digits=2, caption = '<h3><b>Table 1: General Summary of Data, for Each Session</b></h3>', col.names = c("Mice", "Experiment Date", "Number of Brain Areas", "Number of Neurons", "Number of Trials", "Average Brain Spikes", "Average Left Contrast", "Average Right Contrast", "Average Success Rate")) %>%
+    kable_classic(full_width=F, html_font="Cambria")
+```
+
+</br>
+
+
+```{r, results='hide'}
+#A function that calculates data for a feature of our choice (Either "success_rate", "n_brain_area", or "n_neurons". 
+  #Data will correspond to a specific mouse.
+get_Data <- function(data, mName, var, firstLast){
+  if (var=="success_rate"){
+    answer = ((data %>% filter(mouse_name == mName))$success_rate)
+  }else if (var=="n_brain_area"){
+    answer = ((data %>% filter(mouse_name == mName))$n_brain_area)
+  } else {
+    answer = ((data %>% filter(mouse_name == mName))$n_neurons)
+  }
+  if (firstLast == 0){
+    answer = answer[1]
+  } else {
+    dataLen = length(data)
+    answer = tail(answer, 1)
+  }
+  answer = signif(answer, 2)
+  return (answer)
+}
+#A function that calculates either the minimum or the maximum for certain features (Either "success_rate", "n_brain_area", or "n_neurons"). 
+  #Data will correspond to a specific mouse.
+getMinMax<- function(data, mName, var, minMax){
+  if (var=="success_rate"){
+    answer = ((data %>% filter(mouse_name == mName))$success_rate)
+  }else if (var=="n_brain_area"){
+    answer = ((data %>% filter(mouse_name == mName))$n_brain_area)
+  } else {
+    answer = ((data %>% filter(mouse_name == mName))$n_neurons)
+  }
+  if (minMax == 0){
+    answer = min(answer)
+  } else {
+    answer = max(answer)
+  }
+  answer = signif(answer, 2)
+  return (answer)
+  
+}
+
+
+#A function that calculates the mean for a particular feature of our choice (Either "success_rate", "n_brain_area", or "n_neurons").
+  #Data will correspond to a specific mouse.
+getMeans <- function(mName, var){
+  sum = 0
+  count = 0
+  for (i in 1:n.session){
+    tmp = session[[i]];
+    if (tmp$mouse_name == mName){
+      if (var == "success_rate"){
+         val = mean(tmp$feedback_type+1)/2
+         sum = sum+val
+      } else if (var == "n_brain_area"){
+         val = length(unique(tmp$brain_area))
+         sum = sum+val
+      }else {
+         val = dim(tmp$spks[[1]])[1]
+         sum = sum+val
+      }
+      count = count+1
+    }
+  }
+  mean = (sum/count)
+  if (var == "n_brain_area"){
+    mean = signif((sum/count),1)
+  }
+  return (mean)
+}
+
+```
+
+
+
+</br>
+
+
+```{r, results='hide'}
+i.s = 17
+n.trial=length(session[[i.s]]$feedback_type)
+n.area=length(unique(session[[i.s]]$brain_area ))
+# Alternatively, you can extract these information in the meta that we created before.
+
+# We will create a data frame that contain the average spike counts for each area, feedback type,  the two meta, and the trial id
+
+trial.summary =matrix(nrow=n.trial,ncol= n.area+1+2+1)
+for(i.t in 1:n.trial){
+  trial.summary[i.t,]=c(average_spike_area(i.t,i.s),
+                          session[[i.s]]$feedback_type[i.t],
+                        session[[i.s]]$contrast_left[i.t],
+                        session[[i.s]]$contrast_right[i.t],
+                        i.t)
+}
+
+colnames(trial.summary)=c(names(average_spike_area(i.t,i.s)), 'feedback', 'left contr.','right contr.','id' )
+
+
+```
+
+</br>
+
+```{r, results='hide', fig.show=FALSE}
+# Turning it into a data frame
+trial.summary <- as_tibble(trial.summary)
+area.col=c("darkred", "goldenrod", "lightgreen", "cyan", "blue", "magenta")
+# In base R, I usually initiate a blank plot before drawing anything on it
+plot(x=1,y=0, col='white',xlim=c(10,n.trial),ylim=c(0.5,3), xlab="Trials",ylab="Average spike counts", main=paste("Figure 1: Average Spikes per Brain Area, in Session", i.s))
+
+
+for(i in 1:n.area){
+  lines(smooth.spline(trial.summary$id, trial.summary[[i]]),col=area.col[i],lwd=3)
+}
+legend("topright", 
+  legend = colnames(trial.summary)[1:n.area], 
+  col = area.col, 
+  lty = 1, 
+  cex = 0.8
+)
+
+
+
+```
+</br>
+
+```{r, results='hide'}
+get_trail_data <- function(session_id, trail_id){
+  start <- tibble("Brain Area"=NA)  %>%  add_column("Sum of Region Spikes"=NA) %>% add_column("Total Regions"=NA) %>% add_column("Average Region Spikes"=NA) 
+  start  = start%>% add_column("Trial ID"=NA) %>% add_column("Contrast Left"=NA) %>% add_column("Contrast Right"=NA) %>% add_column("Feedback Type"=NA)
+  spikes <- session[[session_id]]$spks[[trail_id]]
+  if (any(is.na(spikes))){
+    disp("value missing")
+  }
+
+  #trail_tibble <- as_tibble(spikes) %>% set_names(binename) %>%  add_column("brain_area" = session[[session_id]]$brain_area ) %>% group_by(brain_area) %>% summarize( "sum_spikes" =across(everything(),sum),.groups = "drop") 
+  trail_tibble <- tibble("neuron_spike" = rowSums(spikes))  %>%  add_column("brain_area" = session[[session_id]]$brain_area ) %>% group_by(brain_area) %>% summarize( region_sum_spike = sum(neuron_spike), region_count = n(),region_mean_spike = mean(neuron_spike)) 
+  trail_tibble  = trail_tibble%>% add_column("trail_id" = trail_id) %>% add_column("contrast_left"= session[[session_id]]$contrast_left[trail_id]) %>% add_column("contrast_right"= session[[session_id]]$contrast_right[trail_id]) %>% add_column("feedback_type"= session[[session_id]]$feedback_type[trail_id])
+  
+  trail_tibble = rename(trail_tibble, "Brain Area"="brain_area", "Sum of Region Spikes" = "region_sum_spike", "Total Regions" = "region_count","Average Region Spikes" = "region_mean_spike", "Trial ID" = "trail_id", "Contrast Left" = "contrast_left", "Contrast Right" = "contrast_right", "Feedback Type" = "feedback_type")
+  start = rbind(start, trail_tibble)
+  start = start[-1,]; start
+   
+}
+
+```
+
+</br>
+
+```{r, results='hide'}
+get_session_data <- function(session_id){
+
+  start <- tibble("Brain Area"=NA)  %>%  add_column("Sum of Region Spikes"=NA) %>% add_column("Total Regions"=NA) %>% add_column("Average Region Spikes"=NA) 
+  start  = start%>% add_column("Trial ID"=NA) %>% add_column("Contrast Left"=NA) %>% add_column("Contrast Right"=NA) %>% add_column("Feedback Type"=NA)
+  
+  for (i in 1:length(session[[session_id]]$spks)){
+    trail_id = i
+    spikes <- session[[session_id]]$spks[[trail_id]]
+    if (any(is.na(spikes))){
+      disp("value missing")
+    }
+    trail_tibble <- tibble("neuron_spike" = rowSums(spikes))  %>%  add_column("brain_area" = session[[session_id]]$brain_area ) %>% group_by(brain_area) %>% summarize( region_sum_spike = sum(neuron_spike), region_count = n(),region_mean_spike = mean(neuron_spike)) 
+    trail_tibble  = trail_tibble%>% add_column("trail_id" = trail_id) %>% add_column("contrast_left"= session[[session_id]]$contrast_left[trail_id]) %>% add_column("contrast_right"= session[[session_id]]$contrast_right[trail_id]) %>% add_column("feedback_type"= session[[session_id]]$feedback_type[trail_id])
+
+    trail_tibble = rename(trail_tibble, "Brain Area"="brain_area", "Sum of Region Spikes" = "region_sum_spike", "Total Regions" = "region_count","Average Region Spikes" = "region_mean_spike", "Trial ID" = "trail_id", "Contrast Left" = "contrast_left", "Contrast Right" = "contrast_right", "Feedback Type" = "feedback_type")
+     start = rbind(start, trail_tibble)
+    
+
+  }
+  start = start[-1,]; start
+
+}
+```
+
+</br>
+
+```{r, results='hide'}
+ start <- tibble("Brain Area"=NA)  %>%  add_column("Sum of Region Spikes"=NA) %>% add_column("Total Regions"=NA) %>% add_column("Average Region Spikes"=NA) 
+  start  = start%>% add_column("Trial ID"=NA) %>% add_column("Contrast Left"=NA) %>% add_column("Contrast Right"=NA) %>% add_column("Feedback Type"=NA)
+  
+#Selecting the first 4 trials
+for (i in 1:4){
+  trail_tibble_1 <- get_trail_data(i.s,i)
+  start = rbind(start, trail_tibble_1)
+}
+  
+
+start = start[-1,]; 
+
+start %>%
+    kbl(digits=2, caption = '<h3><b>Table 2: Analyzing the First Four Trials, Based on Brain Area</b></h3>') %>%
+    kable_classic(full_width=F, html_font="Cambria")
+```
+
+</br>
+
+```{r, results='hide'}
+getAverages <- function(){
+  start <- tibble("Brain Area" = NA) %>% add_column("Mouse"=NA) %>% add_column("Sum of Region Spikes"=NA) %>%  add_column("Average Region Spikes"=NA) 
+  start  = start%>% add_column("Average Left Contrast"=NA) %>% add_column("Average Right Contrast"=NA) %>% add_column("Difference in Average Contrasts"=NA) %>% add_column("Average Success Rate"=NA)
+
+  neurons.sum = 0
+    trials.sum = 0
+    spikes.sum = 0
+    spikes.max.sum = 0
+    contrastLeft.sum = 0
+    contrastRight.sum = 0
+    success.sum = 0
+    totalSessions = 0
+    
+    currentMouse = session[[1]]$mouse_name
+    for (i in 1:n.session){
+      tmp = session[[i]]
+      
+      if ((tmp$mouse_name == currentMouse)){
+ 
+        spikes.sum = spikes.sum + average_spike_area_sess.overall(i)
+
+   
+        contrastLeft.sum = contrastLeft.sum + mean(tmp$contrast_left)
+        
+        contrastRight.sum = contrastRight.sum + mean(tmp$contrast_right)
+        success.sum = success.sum + mean(tmp$feedback_type+1)/2
+        totalSessions = totalSessions+1
+      }
+      if ((tmp$mouse_name != currentMouse) | (i==18)) {
+  
+        spikes.aver = spikes.sum/totalSessions
+        contrastLeft.aver = contrastLeft.sum/totalSessions
+        contrastRight.aver = contrastRight.sum/totalSessions
+        success.aver = success.sum/totalSessions
+        brain_area = unique(session[[i]]$brain_area)
+      
+        for (a in 1:length(brain_area)){
+          mouse1Tibble <- tibble("Brain Area" = brain_area[a]) %>% add_column("Mouse"=currentMouse) %>% add_column("Sum of Region Spikes"=spikes.sum) %>%  add_column("Average Region Spikes"=spikes.aver) 
+          mouse1Tibble  = mouse1Tibble%>% add_column("Average Left Contrast"=contrastLeft.aver) %>% add_column("Average Right Contrast"=contrastRight.aver) %>% add_column("Difference in Average Contrasts"=contrastLeft.aver-contrastRight.aver) %>% add_column("Average Success Rate"=success.aver)
+        
+          start = rbind(start, mouse1Tibble)
+          
+        }
+        
+  
+        currentMouse = tmp$mouse_name
+
+  }
+      
+    }
+
+    start = start[-1,] %>% dplyr::arrange(start[-1,], start[1,])
+
+    return(start )
+}
+```
+
+</br>
+
+```{r, results='hide'}
+theAverages = getAverages()
+theAverages %>%
+    kbl(digits=2, caption = '<h3><b>Table 3: Mouse-Specific Data, Sorted by Brain Area</b></h3>') %>%
+    kable_classic(full_width=F, html_font="Cambria")
+```
 ```{r, results='hide'}
 get_session_data <- function(session_id){
 
@@ -833,8 +1197,6 @@ modifiedData = rename(theData, "Brain Area"="brain_area", "Mouse" = "mouse_name"
 ```
 
 </br>
-
-
 
 
 ```{r, results='hide'}
@@ -904,7 +1266,7 @@ allSessionData=allSessionData[-1,];
 </br>
 </br>
 <h4>3] Data Integration</h4>
-```{r, results='hide'}
+```{r, results='hide', fig.show='hide'}
 #Performing principal component analysis (PCA)
 ggplot(data = allSessionData, aes(x=as.numeric(contrast_difference), y=as.numeric(average_region_spike), color=as.factor(as.character(feedback_type)))) + geom_point() + geom_jitter(width = 0.1, height = 100) + labs(title='Figure 2: Contrast Difference vs Average Spike per Brain Area', x="Contrast Difference", y="Average Spike (per Brain Area)", color=("Feedback Type")) + theme(title = element_text(face="bold", size = 12))
 
